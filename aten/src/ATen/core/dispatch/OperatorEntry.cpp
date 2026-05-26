@@ -1,7 +1,8 @@
-#include <ATen/core/dispatch/OperatorEntry.h>
-#include <ATen/core/op_registration/infer_schema.h>
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <ATen/core/dispatch/ObservedOperators.h>
+#include <ATen/core/dispatch/OperatorEntry.h>
+#include <ATen/core/op_registration/infer_schema.h>
+#include <c10/util/Logging.h>
 #include <c10/util/irange.h>
 
 #include <array>
@@ -161,6 +162,12 @@ OperatorEntry::AnnotatedKernelContainerIterator OperatorEntry::registerKernel(
   std::unique_ptr<FunctionSchema> inferred_function_schema,
   std::string debug
 ) {
+  if (name_.name == "aten::ldexp") {
+    VLOG(1) << "[DEBUG] registerKernel for " << name_.name << "."
+            << name_.overload_name
+            << " with dispatch_key: " << toString(dispatch_key)
+            << ", debug: " << debug;
+  }
   // NB: cpp_signature doesn't get cleared even after the kernel that populated
   // it is deleted.  This means you could poison the value of cpp_signature_
   // with a bad signature value, and then it would permanently stay there until
@@ -239,6 +246,12 @@ void OperatorEntry::deregisterKernel_(
   std::optional<DispatchKey> dispatch_key,
   AnnotatedKernelContainerIterator kernel
 ) {
+  if (name_.name == "aten::ldexp") {
+    VLOG(1) << "[DEBUG] deregisterKernel_ for " << name_.name << "."
+            << name_.overload_name
+            << " with dispatch_key: " << toString(dispatch_key);
+    VLOG(1) << c10::get_backtrace();
+  }
   // Redirect catchAll deregistrations to CompositeImplicitAutograd.
   DispatchKey dk = dispatch_key.has_value() ? *dispatch_key : DispatchKey::CompositeImplicitAutograd;
   auto found = kernels_.find(dk);
@@ -350,6 +363,18 @@ const std::vector<at::Tag>& OperatorEntry::getTags() const {
 }
 
 std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTableEntryWithDebug(const c10::Dispatcher& dispatcher, DispatchKey dispatch_key) const {
+  bool is_ldexp = (name_.name == "aten::ldexp");
+  if (is_ldexp) {
+    VLOG(1) << "[DEBUG] computeDispatchTableEntryWithDebug for " << name_.name
+            << "." << name_.overload_name
+            << " with dispatch_key: " << toString(dispatch_key);
+    std::string registered_keys;
+    for (auto const& [key, _] : kernels_) {
+      registered_keys += std::string(c10::toString(key)) + ", ";
+    }
+    VLOG(1) << "  -> Registered kernels for: " << registered_keys;
+  }
+
   // [Note] DispatchTable computation
   // dispatchTable contains entries for runtime dispatch keys.
   // For any dispatch key, it'll pick a kernel using the following order:
@@ -386,6 +411,10 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
 
   // 1. Operator registration
   if (auto direct_registration = getKernelForDispatchKey(dispatch_key)) {
+    if (is_ldexp) {
+      VLOG(1) << "  -> Found direct registration: "
+              << direct_registration->debug;
+    }
     return {*direct_registration, "kernel"};
   }
 
@@ -393,6 +422,11 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
   //     See Note [Undefined in dispatchTable_] for the special handling for Undefined.
   if (dispatch_key == DispatchKey::Undefined || isIncludedInAlias(dispatch_key, DispatchKey::CompositeExplicitAutogradNonFunctional)) {
     if (auto default_backend_registration = getKernelForDispatchKey(DispatchKey::CompositeExplicitAutogradNonFunctional)) {
+      if (is_ldexp) {
+        VLOG(1) << "  -> Found CompositeExplicitAutogradNonFunctional "
+                   "registration: "
+                << default_backend_registration->debug;
+      }
       return {*default_backend_registration, "default backend kernel"};
     }
   }
@@ -401,6 +435,10 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
   //     See Note [Undefined in dispatchTable_] for the special handling for Undefined.
   if (dispatch_key == DispatchKey::Undefined || isIncludedInAlias(dispatch_key, DispatchKey::CompositeExplicitAutograd)) {
     if (auto default_backend_registration = getKernelForDispatchKey(DispatchKey::CompositeExplicitAutograd)) {
+      if (is_ldexp) {
+        VLOG(1) << "  -> Found CompositeExplicitAutograd registration: "
+                << default_backend_registration->debug;
+      }
       return {*default_backend_registration, "default backend kernel"};
     }
   }
@@ -411,6 +449,10 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
     hasKernelForAnyDispatchKey(getBackendKeySetFromAutograd(dispatch_key)) ||
     // See Note [No Alias Keys in DispatchKeySet]
     hasKernelForDispatchKey(DispatchKey::CompositeExplicitAutograd);
+
+  if (is_ldexp) {
+    VLOG(1) << "  -> has_backend_kernel: " << has_backend_kernel;
+  }
 
   // 2.3. Use CompositeImplicitAutograd kernel if available. For autograd keys, we only use kernel from CompositeImplicitAutograd
   //      when there's no direct registration to its corresponding backend key or CompositeExplicitAutograd.
@@ -427,6 +469,11 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
   // See Note: [Disjoint AliasKeyset] The order for this alias key doesn't matter
   if (dispatch_key != DispatchKey::Undefined && isIncludedInAlias(dispatch_key, DispatchKey::CompositeImplicitAutogradNestedTensor)) {
     if (auto nested_registration = getKernelForDispatchKey(DispatchKey::CompositeImplicitAutogradNestedTensor)) {
+      if (is_ldexp) {
+        VLOG(1)
+            << "  -> Found CompositeImplicitAutogradNestedTensor registration: "
+            << nested_registration->debug;
+      }
       return {*nested_registration, "nested kernel"};
       }
   }
@@ -435,9 +482,20 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
     if (auto math_registration = getKernelForDispatchKey(DispatchKey::CompositeImplicitAutograd)) {
       if (dispatch_key == DispatchKey::AutogradOther
           && hasKernelForAnyDispatchKey(c10::autogradother_backends)) {
+        if (is_ldexp) {
+          VLOG(1) << "  -> Ambiguous autogradother";
+        }
         return {ambiguousAutogradOtherKernel(), "ambiguous autogradother"};
       } else if (!has_backend_kernel) {
+        if (is_ldexp) {
+          VLOG(1) << "  -> Found math kernel: " << math_registration->debug;
+        }
         return {*math_registration, "math kernel"};
+      } else {
+        if (is_ldexp) {
+          VLOG(1)
+              << "  -> Skipping math kernel because has_backend_kernel is true";
+        }
       }
     }
   }
@@ -445,6 +503,10 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
   // 2.4. For autograd backend keys, use kernel from DispatchKey::Autograd if available
   if (isIncludedInAlias(dispatch_key, DispatchKey::Autograd)) {
     if (auto autograd_registration = getKernelForDispatchKey(DispatchKey::Autograd)) {
+      if (is_ldexp) {
+        VLOG(1) << "  -> Found autograd registration: "
+                << autograd_registration->debug;
+      }
       return {*autograd_registration, "autograd kernel"};
     }
   }
@@ -460,13 +522,23 @@ std::pair<const AnnotatedKernel&, const char*> OperatorEntry::computeDispatchTab
   // 3. Backend fallback
   auto dispatch_ix = getDispatchTableIndexForDispatchKey(dispatch_key);
   if (dispatch_ix < 0) {
+    if (is_ldexp) {
+      VLOG(1) << "  -> Backend fallback not registered on mobile";
+    }
     return {missingKernel(), "backend fallback not registered on mobile"};
   }
   if (dispatcher.backendFallbackKernels_[dispatch_ix].kernel.isValid()) {
+    if (is_ldexp) {
+      VLOG(1) << "  -> Found backend fallback: "
+              << dispatcher.backendFallbackKernels_[dispatch_ix].debug;
+    }
     return {dispatcher.backendFallbackKernels_[dispatch_ix], "backend fallback"};
   }
 
   // 4. Default to error
+  if (is_ldexp) {
+    VLOG(1) << "  -> Default to error: missing kernel";
+  }
   return {missingKernel(), "missing"};
 }
 

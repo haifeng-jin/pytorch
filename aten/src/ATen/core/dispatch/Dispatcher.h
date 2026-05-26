@@ -6,17 +6,18 @@
 #include <ATen/core/dispatch/CppSignature.h>
 #include <ATen/core/dispatch/OperatorEntry.h>
 #include <ATen/core/dispatch/RegistrationHandleRAII.h>
+#include <ATen/core/enum_tag.h>
+#include <ATen/core/grad_mode.h>
 #include <ATen/record_function.h>
 #include <c10/core/SafePyObject.h>
 #include <c10/util/Exception.h>
 #include <c10/util/LeftRight.h>
+#include <c10/util/Logging.h>
+
 #include <condition_variable>
 #include <list>
 #include <mutex>
 #include <type_traits>
-
-#include <ATen/core/enum_tag.h>
-#include <ATen/core/grad_mode.h>
 
 #ifndef NDEBUG
 #include <iostream>
@@ -777,6 +778,10 @@ C10_ALWAYS_INLINE_UNLESS_MOBILE Return Dispatcher::call(
   auto dispatchKeySet =
       op.operatorDef_->op.dispatchKeyExtractor()
           .template getDispatchKeySetUnboxed<Args...>(args...);
+  if (op.operator_name().name == "aten::ldexp") {
+    VLOG(1) << "[DEBUG] Dispatcher::call: aten::ldexp, dispatchKeySet: "
+            << dispatchKeySet;
+  }
 #if defined(HAS_TORCH_SHOW_DISPATCH_TRACE) || !defined(NDEBUG)
   DispatchTraceNestingGuard debug_guard;
   if (show_dispatch_trace()) {
